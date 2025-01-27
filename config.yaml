@@ -1,0 +1,22 @@
+# GitLab Configuration
+gitlab:
+  url: "https://gitlab.com/api/v4"
+  token: "<your_gitlab_token>"
+
+# Jira Configuration
+jira:
+  url: "https://<your_domain>.atlassian.net/rest/api/3"
+  project_key: "<your_jira_project_key>"
+  email: "<your_email>"
+  token: "<your_jira_token>"
+  issue_type: "Task"  # Default issue type
+  epic_issue_type: "Epic"  # Issue type for epics
+  epic_name_field_id: "customfield_12345"  # Custom field ID for epic name
+
+# Field Mappings
+field_mappings:
+  title: "summary"
+  description: "description"
+  labels: "labels"
+  milestone: "fixVersion"
+  assignee: "assignee"
