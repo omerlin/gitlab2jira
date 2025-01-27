@@ -2,6 +2,7 @@ import requests
 import yaml
 import json
 import argparse
+from datetime import datetime
 
 # Helper functions
 def log(message):
@@ -12,16 +13,24 @@ def load_config(config_file):
     with open(config_file, "r") as f:
         return yaml.safe_load(f)
 
-def fetch_gitlab_issues(gitlab_url, project_id, headers):
-    """Fetch all issues from GitLab."""
+def fetch_gitlab_issues(gitlab_url, project_id, headers, state="all"):
+    """Fetch all issues from GitLab, optionally filtered by state."""
     url = f"{gitlab_url}/projects/{project_id}/issues"
-    response = requests.get(url, headers=headers)
+    params = {"state": state} if state != "all" else {}
+    response = requests.get(url, headers=headers, params=params)
     response.raise_for_status()
     return response.json()
 
 def fetch_gitlab_epics(gitlab_url, group_id, headers):
     """Fetch all epics from GitLab."""
     url = f"{gitlab_url}/groups/{group_id}/epics"
+    response = requests.get(url, headers=headers)
+    response.raise_for_status()
+    return response.json()
+
+def fetch_gitlab_issue_comments(gitlab_url, project_id, issue_iid, headers):
+    """Fetch comments for a GitLab issue."""
+    url = f"{gitlab_url}/projects/{project_id}/issues/{issue_iid}/notes"
     response = requests.get(url, headers=headers)
     response.raise_for_status()
     return response.json()
@@ -50,16 +59,72 @@ def create_jira_issue(issue, jira_url, headers, auth, dry_run):
         response.raise_for_status()
         return response.json()
 
+def create_jira_comment(issue_key, comment, jira_url, headers, auth, dry_run):
+    """Create a comment on a Jira issue."""
+    if dry_run:
+        log(f"DRY RUN: Would create comment on issue {issue_key}: {json.dumps(comment, indent=2)}")
+    else:
+        url = f"{jira_url}/issue/{issue_key}/comment"
+        response = requests.post(url, json=comment, headers=headers, auth=auth)
+        response.raise_for_status()
+        return response.json()
+
+def transition_jira_issue(issue_key, status, jira_url, headers, auth, dry_run):
+    """Transition a Jira issue to a specific status."""
+    if dry_run:
+        log(f"DRY RUN: Would transition issue {issue_key} to status: {status}")
+    else:
+        # Get available transitions for the issue
+        transitions_url = f"{jira_url}/issue/{issue_key}/transitions"
+        response = requests.get(transitions_url, headers=headers, auth=auth)
+        response.raise_for_status()
+        transitions = response.json()["transitions"]
+
+        # Find the transition ID for the target status
+        transition_id = None
+        for transition in transitions:
+            if transition["to"]["name"].lower() == status.lower():
+                transition_id = transition["id"]
+                break
+
+        if not transition_id:
+            log(f"Error: No transition found for status {status}")
+            return
+
+        # Perform the transition
+        transition_url = f"{jira_url}/issue/{issue_key}/transitions"
+        payload = {"transition": {"id": transition_id}}
+        response = requests.post(transition_url, json=payload, headers=headers, auth=auth)
+        response.raise_for_status()
+
 def migrate_issues(config, gitlab_project_id, dry_run):
-    """Migrate issues from GitLab to Jira."""
+    """Migrate issues and comments from GitLab to Jira."""
     log("Fetching issues from GitLab...")
-    gitlab_issues = fetch_gitlab_issues(config["gitlab"]["url"], gitlab_project_id, {"PRIVATE-TOKEN": config["gitlab"]["token"]})
+    gitlab_issues = fetch_gitlab_issues(config["gitlab"]["url"], gitlab_project_id, {"PRIVATE-TOKEN": config["gitlab"]["token"]}, state="all")
     log(f"Found {len(gitlab_issues)} issues.")
 
     for gitlab_issue in gitlab_issues:
-        log(f"Processing issue: {gitlab_issue['title']} (ID: {gitlab_issue['id']})")
+        log(f"Processing issue: {gitlab_issue['title']} (ID: {gitlab_issue['id']}, State: {gitlab_issue['state']})")
         jira_issue = map_gitlab_to_jira(gitlab_issue, config["jira"]["issue_type"], config["field_mappings"])
-        create_jira_issue(jira_issue, config["jira"]["url"], {"Content-Type": "application/json"}, (config["jira"]["email"], config["jira"]["token"]), dry_run)
+        jira_issue_response = create_jira_issue(jira_issue, config["jira"]["url"], {"Content-Type": "application/json"}, (config["jira"]["email"], config["jira"]["token"]), dry_run)
+        jira_issue_key = jira_issue_response["key"]
+
+        # Transition issue based on GitLab state
+        gitlab_state = gitlab_issue["state"]
+        jira_status = config["jira"]["status_mappings"].get(gitlab_state)
+        if jira_status:
+            transition_jira_issue(jira_issue_key, jira_status, config["jira"]["url"], {"Content-Type": "application/json"}, (config["jira"]["email"], config["jira"]["token"]), dry_run)
+
+        # Migrate comments
+        log(f"Fetching comments for issue: {gitlab_issue['title']} (ID: {gitlab_issue['id']})")
+        gitlab_comments = fetch_gitlab_issue_comments(config["gitlab"]["url"], gitlab_project_id, gitlab_issue["iid"], {"PRIVATE-TOKEN": config["gitlab"]["token"]})
+        log(f"Found {len(gitlab_comments)} comments.")
+
+        for comment in gitlab_comments:
+            jira_comment = {
+                "body": f"{comment['author']['name']} commented on {comment['created_at']}:\n\n{comment['body']}"
+            }
+            create_jira_comment(jira_issue_key, jira_comment, config["jira"]["url"], {"Content-Type": "application/json"}, (config["jira"]["email"], config["jira"]["token"]), dry_run)
 
 def migrate_epics(config, gitlab_group_id, dry_run):
     """Migrate epics from GitLab to Jira."""
