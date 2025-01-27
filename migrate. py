@@ -1,0 +1,93 @@
+import requests
+import yaml
+import json
+import argparse
+
+# Helper functions
+def log(message):
+    print(f"[LOG] {message}")
+
+def load_config(config_file):
+    """Load configuration from YAML file."""
+    with open(config_file, "r") as f:
+        return yaml.safe_load(f)
+
+def fetch_gitlab_issues(gitlab_url, project_id, headers):
+    """Fetch all issues from GitLab."""
+    url = f"{gitlab_url}/projects/{project_id}/issues"
+    response = requests.get(url, headers=headers)
+    response.raise_for_status()
+    return response.json()
+
+def fetch_gitlab_epics(gitlab_url, group_id, headers):
+    """Fetch all epics from GitLab."""
+    url = f"{gitlab_url}/groups/{group_id}/epics"
+    response = requests.get(url, headers=headers)
+    response.raise_for_status()
+    return response.json()
+
+def map_gitlab_to_jira(gitlab_issue, issue_type, field_mappings):
+    """Map GitLab issue fields to Jira fields."""
+    jira_issue = {
+        "fields": {
+            "project": {"key": config["jira"]["project_key"]},
+            "issuetype": {"name": issue_type},
+        }
+    }
+    for gitlab_field, jira_field in field_mappings.items():
+        if gitlab_field in gitlab_issue:
+            jira_issue["fields"][jira_field] = gitlab_issue[gitlab_field]
+    return jira_issue
+
+def create_jira_issue(issue, jira_url, headers, auth, dry_run):
+    """Create an issue in Jira."""
+    if dry_run:
+        log(f"DRY RUN: Would create issue: {json.dumps(issue, indent=2)}")
+        return {"key": "DRY-RUN-KEY"}
+    else:
+        url = f"{jira_url}/issue"
+        response = requests.post(url, json=issue, headers=headers, auth=auth)
+        response.raise_for_status()
+        return response.json()
+
+def migrate_issues(config, gitlab_project_id, dry_run):
+    """Migrate issues from GitLab to Jira."""
+    log("Fetching issues from GitLab...")
+    gitlab_issues = fetch_gitlab_issues(config["gitlab"]["url"], gitlab_project_id, {"PRIVATE-TOKEN": config["gitlab"]["token"]})
+    log(f"Found {len(gitlab_issues)} issues.")
+
+    for gitlab_issue in gitlab_issues:
+        log(f"Processing issue: {gitlab_issue['title']} (ID: {gitlab_issue['id']})")
+        jira_issue = map_gitlab_to_jira(gitlab_issue, config["jira"]["issue_type"], config["field_mappings"])
+        create_jira_issue(jira_issue, config["jira"]["url"], {"Content-Type": "application/json"}, (config["jira"]["email"], config["jira"]["token"]), dry_run)
+
+def migrate_epics(config, gitlab_group_id, dry_run):
+    """Migrate epics from GitLab to Jira."""
+    log("Fetching epics from GitLab...")
+    gitlab_epics = fetch_gitlab_epics(config["gitlab"]["url"], gitlab_group_id, {"PRIVATE-TOKEN": config["gitlab"]["token"]})
+    log(f"Found {len(gitlab_epics)} epics.")
+
+    for gitlab_epic in gitlab_epics:
+        log(f"Processing epic: {gitlab_epic['title']} (ID: {gitlab_epic['id']})")
+        jira_epic = map_gitlab_to_jira(gitlab_epic, config["jira"]["epic_issue_type"], config["field_mappings"])
+        jira_epic["fields"][config["jira"]["epic_name_field_id"]] = gitlab_epic["title"]  # Set epic name
+        create_jira_issue(jira_epic, config["jira"]["url"], {"Content-Type": "application/json"}, (config["jira"]["email"], config["jira"]["token"]), dry_run)
+
+# Main script
+if __name__ == "__main__":
+    # Parse CLI arguments
+    parser = argparse.ArgumentParser(description="Migrate GitLab issues and epics to Jira.")
+    parser.add_argument("--config", required=True, help="Path to config.yaml file.")
+    parser.add_argument("--gitlab-project-id", required=True, help="GitLab project ID for issues.")
+    parser.add_argument("--gitlab-group-id", required=True, help="GitLab group ID for epics.")
+    parser.add_argument("--dry-run", action="store_true", help="Enable dry run mode.")
+    args = parser.parse_args()
+
+    # Load configuration
+    config = load_config(args.config)
+
+    # Start migration
+    log("Starting migration...")
+    migrate_issues(config, args.gitlab_project_id, args.dry_run)
+    migrate_epics(config, args.gitlab_group_id, args.dry_run)
+    log("Migration complete.")
