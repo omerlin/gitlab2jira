@@ -12,6 +12,9 @@ jira:
   issue_type: "Task"  # Default issue type
   epic_issue_type: "Epic"  # Issue type for epics
   epic_name_field_id: "customfield_12345"  # Custom field ID for epic name
+  status_mappings:  # Map GitLab states to Jira statuses
+    open: "To Do"
+    closed: "Done"
 
 # Field Mappings
 field_mappings:
