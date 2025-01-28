@@ -75,3 +75,5 @@ gitlab_markdown = """
 ```python
 def hello():
     print("Hello, World!")
+'''
+"""
